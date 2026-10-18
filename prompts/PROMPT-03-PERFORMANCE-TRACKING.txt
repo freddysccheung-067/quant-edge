@@ -1,0 +1,1077 @@
+# PROMPT 03: PRODUCTION PERFORMANCE TRACKING & MONITORING SYSTEM
+
+## Context
+
+I have a quantitative trading system at `D:\quant-edge\` (GitHub: freddysccheung-067/quant-edge).
+
+**Current State:**
+- Signal generation working (Magic Formula factor model)
+- Portfolio optimization (Skfolio, 4 methods)
+- Backtesting engine (institutional-grade)
+- Options microstructure analytics (dealer gamma signals)
+
+**Missing:**
+No live performance tracking system. Once I start trading in BestBrokers (competition starts in 2 weeks), I need to:
+1. Log every trade I execute
+2. Track daily portfolio value and performance
+3. Calculate running metrics (return, volatility, Sharpe, drawdown)
+4. Compare to SPY benchmark
+5. Generate automated reports
+6. Detect underperformance early
+7. Log signal generation decisions (for post-mortem analysis)
+
+---
+
+## Objective
+
+Build a **production-grade performance tracking system** that:
+- Survives restarts (persistent database)
+- Tracks every trade with full attribution
+- Calculates real-time risk metrics
+- Generates daily/weekly reports automatically
+- Alerts on threshold breaches (drawdown, vol spike)
+- Enables deep post-mortem analysis (what worked, what didn't)
+
+This is the "black box flight recorder" for the trading system.
+
+---
+
+## Architecture
+
+```
+tracking/
+├── __init__.py
+├── database/
+│   ├── __init__.py
+│   ├── schema.sql              # SQLite schema
+│   ├── models.py               # SQLAlchemy ORM models
+│   └── connection.py           # DB connection management
+├── logger/
+│   ├── __init__.py
+│   ├── trade_logger.py         # Log executed trades
+│   ├── signal_logger.py        # Log generated signals
+│   └── portfolio_logger.py     # Log daily portfolio snapshots
+├── metrics/
+│   ├── __init__.py
+│   ├── calculator.py           # Calculate performance metrics
+│   └── benchmark.py            # Benchmark comparison logic
+├── alerts/
+│   ├── __init__.py
+│   ├── threshold_monitor.py    # Check thresholds, send alerts
+│   └── email_notifier.py       # Email alert sender (optional)
+├── reports/
+│   ├── __init__.py
+│   ├── daily_report.py         # Generate daily performance report
+│   ├── weekly_report.py        # Generate weekly tearsheet
+│   └── templates/              # HTML templates for reports
+└── visualization/
+    ├── __init__.py
+    ├── equity_curve.py         # Live equity curve chart
+    ├── drawdown_chart.py       # Drawdown tracking
+    └── attribution_chart.py    # P&L attribution by position
+```
+
+---
+
+## Requirements
+
+### 1. Database Schema (`tracking/database/schema.sql`)
+
+Use **SQLite** for simplicity (portable, no server required).
+
+```sql
+-- Trades table: Every execution
+CREATE TABLE trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,  -- 'buy' or 'sell'
+    shares REAL NOT NULL,
+    price REAL NOT NULL,
+    notional REAL NOT NULL,  -- shares * price
+    commission REAL DEFAULT 0,
+    notes TEXT,
+    signal_id INTEGER,  -- Link to signal that generated this trade
+    FOREIGN KEY (signal_id) REFERENCES signals(id)
+);
+
+-- Signals table: Every signal generated (even if not executed)
+CREATE TABLE signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    strategy TEXT NOT NULL,  -- 'magic_formula', 'momentum', 'combined'
+    symbol TEXT NOT NULL,
+    action TEXT,  -- 'buy', 'sell', 'hold'
+    target_weight REAL,
+    score REAL,  -- Factor score/rank
+    reason TEXT,  -- Why this signal was generated
+    executed BOOLEAN DEFAULT 0  -- Was it actually traded?
+);
+
+-- Portfolio snapshots: Daily (or more frequent)
+CREATE TABLE portfolio_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    total_value REAL NOT NULL,
+    cash REAL NOT NULL,
+    holdings_value REAL NOT NULL,
+    total_return REAL,  -- Since inception
+    daily_return REAL,
+    benchmark_value REAL,  -- SPY benchmark tracking
+    num_positions INTEGER,
+    notes TEXT
+);
+
+-- Holdings: Current positions (updated on every trade)
+CREATE TABLE holdings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    symbol TEXT NOT NULL,
+    shares REAL NOT NULL,
+    avg_cost REAL NOT NULL,  -- Average purchase price
+    current_price REAL NOT NULL,
+    market_value REAL NOT NULL,
+    unrealized_pnl REAL,
+    weight REAL,  -- % of portfolio
+    UNIQUE(symbol, timestamp)
+);
+
+-- Performance metrics: Running calculations
+CREATE TABLE performance_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    metric_name TEXT NOT NULL,
+    metric_value REAL NOT NULL,
+    period TEXT,  -- 'daily', 'weekly', 'monthly', 'inception'
+    notes TEXT
+);
+
+-- Alerts: Threshold breaches
+CREATE TABLE alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL,
+    alert_type TEXT NOT NULL,  -- 'drawdown', 'volatility', 'concentration'
+    severity TEXT NOT NULL,  -- 'warning', 'critical'
+    message TEXT NOT NULL,
+    acknowledged BOOLEAN DEFAULT 0
+);
+
+CREATE INDEX idx_trades_timestamp ON trades(timestamp);
+CREATE INDEX idx_trades_symbol ON trades(symbol);
+CREATE INDEX idx_signals_timestamp ON signals(timestamp);
+CREATE INDEX idx_portfolio_timestamp ON portfolio_snapshots(timestamp);
+```
+
+---
+
+### 2. ORM Models (`tracking/database/models.py`)
+
+```python
+from sqlalchemy import Column, Integer, Float, String, DateTime, Boolean, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
+from datetime import datetime
+
+Base = declarative_base()
+
+class Trade(Base):
+    __tablename__ = 'trades'
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    symbol = Column(String, nullable=False)
+    side = Column(String, nullable=False)
+    shares = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    notional = Column(Float, nullable=False)
+    commission = Column(Float, default=0.0)
+    notes = Column(String)
+    signal_id = Column(Integer, ForeignKey('signals.id'))
+
+    signal = relationship("Signal", back_populates="trades")
+
+    def __repr__(self):
+        return f"<Trade {self.timestamp} {self.side} {self.shares} {self.symbol} @ ${self.price}>"
+
+class Signal(Base):
+    __tablename__ = 'signals'
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    strategy = Column(String, nullable=False)
+    symbol = Column(String, nullable=False)
+    action = Column(String)
+    target_weight = Column(Float)
+    score = Column(Float)
+    reason = Column(String)
+    executed = Column(Boolean, default=False)
+
+    trades = relationship("Trade", back_populates="signal")
+
+    def __repr__(self):
+        return f"<Signal {self.timestamp} {self.strategy} {self.action} {self.symbol}>"
+
+class PortfolioSnapshot(Base):
+    __tablename__ = 'portfolio_snapshots'
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    total_value = Column(Float, nullable=False)
+    cash = Column(Float, nullable=False)
+    holdings_value = Column(Float, nullable=False)
+    total_return = Column(Float)
+    daily_return = Column(Float)
+    benchmark_value = Column(Float)
+    num_positions = Column(Integer)
+    notes = Column(String)
+
+    def __repr__(self):
+        return f"<Snapshot {self.timestamp} ${self.total_value:,.2f}>"
+
+class Holding(Base):
+    __tablename__ = 'holdings'
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    symbol = Column(String, nullable=False)
+    shares = Column(Float, nullable=False)
+    avg_cost = Column(Float, nullable=False)
+    current_price = Column(Float, nullable=False)
+    market_value = Column(Float, nullable=False)
+    unrealized_pnl = Column(Float)
+    weight = Column(Float)
+
+    def __repr__(self):
+        return f"<Holding {self.symbol} {self.shares} @ ${self.current_price}>"
+
+class PerformanceMetric(Base):
+    __tablename__ = 'performance_metrics'
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    metric_name = Column(String, nullable=False)
+    metric_value = Column(Float, nullable=False)
+    period = Column(String)
+    notes = Column(String)
+
+class Alert(Base):
+    __tablename__ = 'alerts'
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    alert_type = Column(String, nullable=False)
+    severity = Column(String, nullable=False)
+    message = Column(String, nullable=False)
+    acknowledged = Column(Boolean, default=False)
+```
+
+---
+
+### 3. Trade Logger (`tracking/logger/trade_logger.py`)
+
+```python
+from sqlalchemy.orm import Session
+from tracking.database.models import Trade, Signal, Holding
+from tracking.database.connection import get_db_session
+from datetime import datetime
+from typing import Dict, Optional
+
+class TradeLogger:
+    """
+    Log executed trades and update holdings.
+
+    Usage:
+        logger = TradeLogger()
+        logger.log_trade(
+            symbol="AAPL",
+            side="buy",
+            shares=10,
+            price=185.50,
+            signal_id=123
+        )
+    """
+
+    def __init__(self, db_path: str = "tracking/trading.db"):
+        self.db_path = db_path
+
+    def log_trade(self,
+                  symbol: str,
+                  side: str,
+                  shares: float,
+                  price: float,
+                  commission: float = 0.0,
+                  notes: str = None,
+                  signal_id: Optional[int] = None) -> Trade:
+        """
+        Log a single trade execution.
+
+        Returns the Trade object created.
+        """
+        with get_db_session(self.db_path) as session:
+            trade = Trade(
+                timestamp=datetime.now(),
+                symbol=symbol,
+                side=side,
+                shares=shares,
+                price=price,
+                notional=shares * price,
+                commission=commission,
+                notes=notes,
+                signal_id=signal_id
+            )
+            session.add(trade)
+            session.commit()
+
+            # Update holdings
+            self._update_holdings(session, symbol, side, shares, price)
+
+            return trade
+
+    def _update_holdings(self,
+                        session: Session,
+                        symbol: str,
+                        side: str,
+                        shares: float,
+                        price: float):
+        """
+        Update holdings after trade execution.
+
+        Buy: Add to position (weighted average cost)
+        Sell: Reduce position (FIFO assumed)
+        """
+        # Get current holding
+        current = session.query(Holding).filter_by(symbol=symbol).order_by(Holding.timestamp.desc()).first()
+
+        if side == 'buy':
+            if current and current.shares > 0:
+                # Average up
+                total_cost = (current.shares * current.avg_cost) + (shares * price)
+                new_shares = current.shares + shares
+                new_avg_cost = total_cost / new_shares
+            else:
+                # New position
+                new_shares = shares
+                new_avg_cost = price
+
+            holding = Holding(
+                timestamp=datetime.now(),
+                symbol=symbol,
+                shares=new_shares,
+                avg_cost=new_avg_cost,
+                current_price=price,
+                market_value=new_shares * price,
+                unrealized_pnl=(price - new_avg_cost) * new_shares
+            )
+            session.add(holding)
+
+        elif side == 'sell':
+            if not current or current.shares < shares:
+                raise ValueError(f"Cannot sell {shares} shares of {symbol}, only {current.shares if current else 0} held")
+
+            new_shares = current.shares - shares
+            if new_shares > 0:
+                holding = Holding(
+                    timestamp=datetime.now(),
+                    symbol=symbol,
+                    shares=new_shares,
+                    avg_cost=current.avg_cost,  # Cost basis unchanged
+                    current_price=price,
+                    market_value=new_shares * price,
+                    unrealized_pnl=(price - current.avg_cost) * new_shares
+                )
+                session.add(holding)
+            # If new_shares == 0, position is closed (no holding entry needed)
+
+    def get_recent_trades(self, limit: int = 50) -> List[Trade]:
+        """Get most recent trades."""
+        with get_db_session(self.db_path) as session:
+            return session.query(Trade).order_by(Trade.timestamp.desc()).limit(limit).all()
+
+    def get_trades_by_symbol(self, symbol: str) -> List[Trade]:
+        """Get all trades for a symbol."""
+        with get_db_session(self.db_path) as session:
+            return session.query(Trade).filter_by(symbol=symbol).order_by(Trade.timestamp).all()
+```
+
+---
+
+### 4. Portfolio Logger (`tracking/logger/portfolio_logger.py`)
+
+```python
+class PortfolioLogger:
+    """
+    Take daily snapshots of portfolio state.
+
+    Run this every day after market close (or more frequently).
+    """
+
+    def __init__(self, db_path: str = "tracking/trading.db"):
+        self.db_path = db_path
+
+    def log_snapshot(self,
+                    total_value: float,
+                    cash: float,
+                    holdings_value: float,
+                    benchmark_value: float = None,
+                    notes: str = None) -> PortfolioSnapshot:
+        """
+        Log a portfolio snapshot.
+
+        Args:
+            total_value: Total portfolio value (cash + holdings)
+            cash: Cash balance
+            holdings_value: Market value of all holdings
+            benchmark_value: SPY benchmark value for comparison
+        """
+        with get_db_session(self.db_path) as session:
+            # Get previous snapshot for returns calculation
+            prev = session.query(PortfolioSnapshot).order_by(PortfolioSnapshot.timestamp.desc()).first()
+
+            if prev:
+                daily_return = (total_value - prev.total_value) / prev.total_value
+                total_return = (total_value - 25000) / 25000  # Assuming $25k initial
+            else:
+                daily_return = 0.0
+                total_return = 0.0
+
+            # Count positions
+            holdings = session.query(Holding).filter(Holding.shares > 0).all()
+            num_positions = len(holdings)
+
+            snapshot = PortfolioSnapshot(
+                timestamp=datetime.now(),
+                total_value=total_value,
+                cash=cash,
+                holdings_value=holdings_value,
+                total_return=total_return,
+                daily_return=daily_return,
+                benchmark_value=benchmark_value,
+                num_positions=num_positions,
+                notes=notes
+            )
+            session.add(snapshot)
+            session.commit()
+
+            return snapshot
+
+    def get_equity_curve(self) -> pd.DataFrame:
+        """
+        Get full equity curve as DataFrame.
+
+        Returns:
+            DataFrame with columns: timestamp, total_value, benchmark_value, total_return
+        """
+        with get_db_session(self.db_path) as session:
+            snapshots = session.query(PortfolioSnapshot).order_by(PortfolioSnapshot.timestamp).all()
+
+            return pd.DataFrame([{
+                'timestamp': s.timestamp,
+                'total_value': s.total_value,
+                'benchmark_value': s.benchmark_value,
+                'total_return': s.total_return,
+                'daily_return': s.daily_return,
+                'num_positions': s.num_positions
+            } for s in snapshots])
+```
+
+---
+
+### 5. Metrics Calculator (`tracking/metrics/calculator.py`)
+
+```python
+class MetricsCalculator:
+    """
+    Calculate all performance metrics from portfolio history.
+    """
+
+    def __init__(self, db_path: str = "tracking/trading.db"):
+        self.db_path = db_path
+
+    def calculate_all_metrics(self) -> Dict[str, float]:
+        """
+        Calculate comprehensive performance metrics.
+
+        Returns:
+            {
+                'total_return': float,
+                'annualized_return': float,
+                'volatility': float,
+                'sharpe_ratio': float,
+                'sortino_ratio': float,
+                'max_drawdown': float,
+                'current_drawdown': float,
+                'win_rate': float,
+                'avg_win': float,
+                'avg_loss': float,
+                'profit_factor': float,
+                'total_trades': int,
+                'days_active': int
+            }
+        """
+        portfolio_logger = PortfolioLogger(self.db_path)
+        equity_curve = portfolio_logger.get_equity_curve()
+
+        if len(equity_curve) < 2:
+            return {}  # Not enough data
+
+        # Returns series
+        returns = equity_curve['daily_return'].dropna()
+
+        # Total return
+        initial = equity_curve.iloc[0]['total_value']
+        final = equity_curve.iloc[-1]['total_value']
+        total_return = (final - initial) / initial
+
+        # Annualized return
+        days = len(equity_curve)
+        annualized_return = (1 + total_return) ** (252 / days) - 1
+
+        # Volatility
+        volatility = returns.std() * np.sqrt(252)
+
+        # Sharpe ratio (assume 4% risk-free)
+        rf_daily = 0.04 / 252
+        excess_returns = returns - rf_daily
+        sharpe_ratio = (excess_returns.mean() / excess_returns.std()) * np.sqrt(252) if excess_returns.std() > 0 else 0
+
+        # Sortino ratio (downside deviation only)
+        downside_returns = returns[returns < 0]
+        downside_deviation = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else volatility
+        sortino_ratio = (annualized_return - 0.04) / downside_deviation if downside_deviation > 0 else 0
+
+        # Max drawdown
+        cumulative = (1 + equity_curve['daily_return'].fillna(0)).cumprod()
+        cummax = cumulative.cummax()
+        drawdowns = (cumulative - cummax) / cummax
+        max_drawdown = drawdowns.min()
+        current_drawdown = drawdowns.iloc[-1]
+
+        # Trade statistics
+        with get_db_session(self.db_path) as session:
+            trades = session.query(Trade).all()
+            total_trades = len(trades)
+
+            # Win/loss analysis (approximate from daily returns)
+            winning_days = len(returns[returns > 0])
+            losing_days = len(returns[returns < 0])
+            win_rate = winning_days / len(returns) if len(returns) > 0 else 0
+            avg_win = returns[returns > 0].mean() if winning_days > 0 else 0
+            avg_loss = returns[returns < 0].mean() if losing_days > 0 else 0
+            profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+
+        return {
+            'total_return': total_return,
+            'annualized_return': annualized_return,
+            'volatility': volatility,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,
+            'max_drawdown': max_drawdown,
+            'current_drawdown': current_drawdown,
+            'win_rate': win_rate,
+            'avg_win': avg_win,
+            'avg_loss': avg_loss,
+            'profit_factor': profit_factor,
+            'total_trades': total_trades,
+            'days_active': days
+        }
+
+    def calculate_rolling_sharpe(self, window: int = 30) -> pd.DataFrame:
+        """
+        Calculate rolling Sharpe ratio.
+
+        Args:
+            window: Rolling window in days
+
+        Returns:
+            DataFrame with timestamp and rolling_sharpe columns
+        """
+        portfolio_logger = PortfolioLogger(self.db_path)
+        equity_curve = portfolio_logger.get_equity_curve()
+        returns = equity_curve['daily_return'].fillna(0)
+
+        rf_daily = 0.04 / 252
+        excess_returns = returns - rf_daily
+
+        rolling_sharpe = (
+            excess_returns.rolling(window=window).mean() /
+            excess_returns.rolling(window=window).std()
+        ) * np.sqrt(252)
+
+        return pd.DataFrame({
+            'timestamp': equity_curve['timestamp'],
+            'rolling_sharpe': rolling_sharpe
+        })
+```
+
+---
+
+### 6. Alert Monitor (`tracking/alerts/threshold_monitor.py`)
+
+```python
+class ThresholdMonitor:
+    """
+    Monitor performance metrics and trigger alerts on threshold breaches.
+    """
+
+    def __init__(self, db_path: str = "tracking/trading.db"):
+        self.db_path = db_path
+        self.thresholds = {
+            'max_drawdown': -0.15,  # Alert if drawdown > -15%
+            'daily_loss': -0.05,  # Alert if single day loss > -5%
+            'volatility': 0.30,  # Alert if vol spikes > 30% annualized
+            'concentration': 0.20  # Alert if single position > 20%
+        }
+
+    def check_all_thresholds(self) -> List[Alert]:
+        """
+        Check all thresholds and create alerts if breached.
+
+        Returns list of alerts created (if any).
+        """
+        alerts = []
+
+        # Check drawdown
+        calc = MetricsCalculator(self.db_path)
+        metrics = calc.calculate_all_metrics()
+
+        if metrics.get('current_drawdown', 0) < self.thresholds['max_drawdown']:
+            alert = self._create_alert(
+                alert_type='drawdown',
+                severity='critical',
+                message=f"Portfolio drawdown {metrics['current_drawdown']:.1%} exceeds threshold {self.thresholds['max_drawdown']:.1%}"
+            )
+            alerts.append(alert)
+
+        # Check daily loss
+        portfolio_logger = PortfolioLogger(self.db_path)
+        equity_curve = portfolio_logger.get_equity_curve()
+        if len(equity_curve) > 0:
+            last_return = equity_curve.iloc[-1]['daily_return']
+            if last_return < self.thresholds['daily_loss']:
+                alert = self._create_alert(
+                    alert_type='daily_loss',
+                    severity='warning',
+                    message=f"Daily loss {last_return:.2%} exceeds threshold {self.thresholds['daily_loss']:.1%}"
+                )
+                alerts.append(alert)
+
+        # Check volatility
+        if metrics.get('volatility', 0) > self.thresholds['volatility']:
+            alert = self._create_alert(
+                alert_type='volatility',
+                severity='warning',
+                message=f"Volatility {metrics['volatility']:.1%} exceeds threshold {self.thresholds['volatility']:.1%}"
+            )
+            alerts.append(alert)
+
+        # Check concentration
+        with get_db_session(self.db_path) as session:
+            holdings = session.query(Holding).all()
+            if holdings:
+                total_value = sum(h.market_value for h in holdings)
+                for holding in holdings:
+                    weight = holding.market_value / total_value
+                    if weight > self.thresholds['concentration']:
+                        alert = self._create_alert(
+                            alert_type='concentration',
+                            severity='warning',
+                            message=f"{holding.symbol} concentration {weight:.1%} exceeds threshold {self.thresholds['concentration']:.1%}"
+                        )
+                        alerts.append(alert)
+
+        return alerts
+
+    def _create_alert(self, alert_type: str, severity: str, message: str) -> Alert:
+        """Create and save an alert."""
+        with get_db_session(self.db_path) as session:
+            alert = Alert(
+                timestamp=datetime.now(),
+                alert_type=alert_type,
+                severity=severity,
+                message=message,
+                acknowledged=False
+            )
+            session.add(alert)
+            session.commit()
+            return alert
+```
+
+---
+
+### 7. Daily Report Generator (`tracking/reports/daily_report.py`)
+
+```python
+class DailyReportGenerator:
+    """
+    Generate daily performance report.
+    """
+
+    def __init__(self, db_path: str = "tracking/trading.db"):
+        self.db_path = db_path
+
+    def generate_report(self, output_path: str = "reports/daily_report.html"):
+        """
+        Generate comprehensive daily report as HTML.
+        """
+        calc = MetricsCalculator(self.db_path)
+        metrics = calc.calculate_all_metrics()
+
+        portfolio_logger = PortfolioLogger(self.db_path)
+        equity_curve = portfolio_logger.get_equity_curve()
+
+        # Get latest snapshot
+        latest = equity_curve.iloc[-1] if len(equity_curve) > 0 else None
+
+        # Get recent trades
+        trade_logger = TradeLogger(self.db_path)
+        recent_trades = trade_logger.get_recent_trades(limit=10)
+
+        # Get current holdings
+        with get_db_session(self.db_path) as session:
+            holdings = session.query(Holding).filter(Holding.shares > 0).order_by(Holding.market_value.desc()).all()
+
+        # Build HTML report
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Daily Performance Report - {datetime.now().strftime('%Y-%m-%d')}</title>
+            <style>
+                body {{ font-family: Inter, sans-serif; background: #0F172A; color: #F8FAFC; padding: 40px; }}
+                h1 {{ color: #38BDF8; }}
+                .metric {{ display: inline-block; margin: 20px; }}
+                .metric-label {{ font-size: 12px; color: #94A3B8; }}
+                .metric-value {{ font-size: 24px; font-weight: bold; }}
+                .positive {{ color: #22D3EE; }}
+                .negative {{ color: #F97316; }}
+                table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+                th, td {{ border: 1px solid #1E293B; padding: 10px; text-align: left; }}
+                th {{ background: #1E293B; }}
+            </style>
+        </head>
+        <body>
+            <h1>Daily Performance Report</h1>
+            <p>{datetime.now().strftime('%B %d, %Y')}</p>
+
+            <h2>Performance Metrics</h2>
+            <div class="metric">
+                <div class="metric-label">Total Return</div>
+                <div class="metric-value {'positive' if metrics.get('total_return', 0) > 0 else 'negative'}">
+                    {metrics.get('total_return', 0):.2%}
+                </div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Sharpe Ratio</div>
+                <div class="metric-value">{metrics.get('sharpe_ratio', 0):.2f}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Max Drawdown</div>
+                <div class="metric-value negative">{metrics.get('max_drawdown', 0):.2%}</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Win Rate</div>
+                <div class="metric-value">{metrics.get('win_rate', 0):.1%}</div>
+            </div>
+
+            <h2>Current Holdings</h2>
+            <table>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Shares</th>
+                    <th>Avg Cost</th>
+                    <th>Current Price</th>
+                    <th>Market Value</th>
+                    <th>Unrealized P&L</th>
+                    <th>Weight</th>
+                </tr>
+        """
+
+        total_value = latest['total_value'] if latest is not None else 25000
+        for h in holdings:
+            weight = h.market_value / total_value
+            pnl_pct = (h.current_price - h.avg_cost) / h.avg_cost
+            html += f"""
+                <tr>
+                    <td>{h.symbol}</td>
+                    <td>{h.shares:.2f}</td>
+                    <td>${h.avg_cost:.2f}</td>
+                    <td>${h.current_price:.2f}</td>
+                    <td>${h.market_value:,.2f}</td>
+                    <td class="{'positive' if h.unrealized_pnl > 0 else 'negative'}">
+                        ${h.unrealized_pnl:,.2f} ({pnl_pct:.1%})
+                    </td>
+                    <td>{weight:.1%}</td>
+                </tr>
+            """
+
+        html += """
+            </table>
+
+            <h2>Recent Trades</h2>
+            <table>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Shares</th>
+                    <th>Price</th>
+                    <th>Notional</th>
+                </tr>
+        """
+
+        for t in recent_trades:
+            html += f"""
+                <tr>
+                    <td>{t.timestamp.strftime('%Y-%m-%d %H:%M')}</td>
+                    <td>{t.symbol}</td>
+                    <td class="{'positive' if t.side == 'buy' else 'negative'}">{t.side.upper()}</td>
+                    <td>{t.shares:.2f}</td>
+                    <td>${t.price:.2f}</td>
+                    <td>${t.notional:,.2f}</td>
+                </tr>
+            """
+
+        html += """
+            </table>
+        </body>
+        </html>
+        """
+
+        # Save report
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w') as f:
+            f.write(html)
+
+        return output_path
+```
+
+---
+
+### 8. Integration Script (`examples/track_performance.py`)
+
+```python
+"""
+Daily performance tracking workflow.
+
+Run this script:
+1. Every morning: Update portfolio snapshot
+2. After trading: Log executed trades
+3. Every evening: Generate daily report
+"""
+
+from tracking.logger.trade_logger import TradeLogger
+from tracking.logger.portfolio_logger import PortfolioLogger
+from tracking.metrics.calculator import MetricsCalculator
+from tracking.alerts.threshold_monitor import ThresholdMonitor
+from tracking.reports.daily_report import DailyReportGenerator
+
+def main():
+    print("="*80)
+    print("DAILY PERFORMANCE TRACKING")
+    print("="*80)
+
+    # 1. Get current portfolio value (manual input or API)
+    print("\n[1/5] Enter current portfolio state:")
+    total_value = float(input("Total portfolio value: $"))
+    cash = float(input("Cash balance: $"))
+    holdings_value = total_value - cash
+
+    # 2. Log snapshot
+    print("\n[2/5] Logging portfolio snapshot...")
+    portfolio_logger = PortfolioLogger()
+    snapshot = portfolio_logger.log_snapshot(
+        total_value=total_value,
+        cash=cash,
+        holdings_value=holdings_value
+    )
+    print(f"      Snapshot logged: ${total_value:,.2f}")
+
+    # 3. Calculate metrics
+    print("\n[3/5] Calculating metrics...")
+    calc = MetricsCalculator()
+    metrics = calc.calculate_all_metrics()
+    print(f"      Total Return: {metrics['total_return']:.2%}")
+    print(f"      Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    print(f"      Max Drawdown: {metrics['max_drawdown']:.2%}")
+
+    # 4. Check thresholds
+    print("\n[4/5] Checking alert thresholds...")
+    monitor = ThresholdMonitor()
+    alerts = monitor.check_all_thresholds()
+    if alerts:
+        print(f"      ⚠️  {len(alerts)} alerts triggered:")
+        for alert in alerts:
+            print(f"         [{alert.severity.upper()}] {alert.message}")
+    else:
+        print("      ✅ All thresholds OK")
+
+    # 5. Generate report
+    print("\n[5/5] Generating daily report...")
+    reporter = DailyReportGenerator()
+    report_path = reporter.generate_report()
+    print(f"      Report saved: {report_path}")
+
+    print("\n" + "="*80)
+    print("✅ Daily tracking complete!")
+    print("="*80)
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+### 9. Quick Trade Logging Script (`examples/log_trade.py`)
+
+```python
+"""
+Quick script to log a trade execution.
+
+Usage:
+    python examples/log_trade.py AAPL buy 10 185.50
+"""
+
+import sys
+from tracking.logger.trade_logger import TradeLogger
+
+def main():
+    if len(sys.argv) < 5:
+        print("Usage: python log_trade.py <symbol> <side> <shares> <price>")
+        print("Example: python log_trade.py AAPL buy 10 185.50")
+        sys.exit(1)
+
+    symbol = sys.argv[1]
+    side = sys.argv[2]
+    shares = float(sys.argv[3])
+    price = float(sys.argv[4])
+
+    logger = TradeLogger()
+    trade = logger.log_trade(symbol, side, shares, price)
+
+    print(f"✅ Trade logged:")
+    print(f"   {trade.timestamp.strftime('%Y-%m-%d %H:%M')} {side.upper()} {shares} {symbol} @ ${price}")
+    print(f"   Notional: ${trade.notional:,.2f}")
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## Testing (`test_tracking.py`)
+
+```python
+import unittest
+from tracking.logger.trade_logger import TradeLogger
+from tracking.logger.portfolio_logger import PortfolioLogger
+from tracking.metrics.calculator import MetricsCalculator
+
+class TestTradeLogger(unittest.TestCase):
+
+    def setUp(self):
+        self.logger = TradeLogger(db_path=":memory:")  # In-memory for testing
+
+    def test_log_buy_trade(self):
+        """Test logging a buy trade."""
+        trade = self.logger.log_trade("AAPL", "buy", 10, 185.50)
+        self.assertEqual(trade.symbol, "AAPL")
+        self.assertEqual(trade.side, "buy")
+        self.assertEqual(trade.shares, 10)
+        self.assertAlmostEqual(trade.notional, 1855.0, places=2)
+
+    def test_holdings_update_on_buy(self):
+        """Holdings should update correctly after buy."""
+        self.logger.log_trade("AAPL", "buy", 10, 180.00)
+        self.logger.log_trade("AAPL", "buy", 5, 190.00)
+
+        # Weighted average cost = (10*180 + 5*190) / 15 = 183.33
+        # Expected: 15 shares @ $183.33 avg
+        # (Test implementation here)
+
+class TestMetricsCalculator(unittest.TestCase):
+
+    def test_sharpe_ratio_calculation(self):
+        """Verify Sharpe ratio matches manual calculation."""
+        # Create synthetic portfolio snapshots
+        # Calculate expected Sharpe
+        # Assert calc.calculate_all_metrics()['sharpe_ratio'] matches
+```
+
+---
+
+## Success Criteria
+
+After implementation, I should be able to:
+
+1. **Log trades instantly:**
+   ```bash
+   python examples/log_trade.py AAPL buy 10 185.50
+   ✅ Trade logged
+   ```
+
+2. **Track daily performance:**
+   ```bash
+   python examples/track_performance.py
+   ```
+   Outputs:
+   ```
+   Total Return: +3.2%
+   Sharpe Ratio: 1.05
+   Max Drawdown: -2.1%
+   ✅ All thresholds OK
+   Report saved: reports/daily_report_20261018.html
+   ```
+
+3. **Open HTML report in browser and see:**
+   - Current portfolio value and return
+   - All holdings with P&L
+   - Recent trade history
+   - Performance metrics
+   - Professional styling (not ugly default HTML)
+
+4. **Get alerted on issues:**
+   - Drawdown > -15% → Alert logged
+   - Daily loss > -5% → Alert logged
+   - Position concentration > 20% → Alert logged
+
+---
+
+## Deliverables
+
+1. `tracking/database/` - SQLite schema + ORM models (~300 lines)
+2. `tracking/logger/` - Trade, signal, portfolio loggers (~400 lines)
+3. `tracking/metrics/` - Metrics calculator (~350 lines)
+4. `tracking/alerts/` - Threshold monitor (~200 lines)
+5. `tracking/reports/` - Daily/weekly report generators (~400 lines)
+6. `tracking/visualization/` - Chart generators (~250 lines)
+7. `examples/track_performance.py` - Daily workflow script (~100 lines)
+8. `examples/log_trade.py` - Quick trade logging (~50 lines)
+9. `test_tracking.py` - Comprehensive tests (~400 lines)
+
+**Total estimate: ~2,450 lines**
+
+---
+
+## Integration with Existing System
+
+Modify `run_system.py`:
+
+```python
+# At the end, after generating signals:
+from tracking.logger.signal_logger import SignalLogger
+signal_logger = SignalLogger()
+for symbol, weight in target_weights.items():
+    signal_logger.log_signal(
+        strategy="magic_formula",
+        symbol=symbol,
+        action="buy" if weight > 0 else "hold",
+        target_weight=weight,
+        executed=False  # Mark True after you manually execute
+    )
+```
+
+**This gives you full auditability: you know exactly why every signal was generated and whether you executed it.**
+
+---
+
+This is your control tower. Build it solid. 🚀

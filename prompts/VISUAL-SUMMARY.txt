@@ -1,0 +1,228 @@
+# 🎯 QUANTEDGE: ONE-PAGE VISUAL SUMMARY
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║                           QUANTEDGE PROJECT                               ║
+║              Institutional-Grade Quantitative Trading System              ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  📍 LOCATION: D:\quant-edge\                                             │
+│  🎯 GOAL: Win BestBrokers competition + Build God's Eye View of trading │
+│  ⏱️  TIMELINE: 14-day MVP sprint → Competition → Production tool        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                         5 ONE-SHOT PROMPTS                                ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 01-DATA-FETCHER.md              [3-4 hours] [PRIORITY 1: FOUNDATION]    │
+├─────────────────────────────────────────────────────────────────────────┤
+│ • Fetch S&P 500 tickers from Wikipedia                                   │
+│ • Pull 5 years of price data (yfinance)                                  │
+│ • Extract fundamentals (EBIT, ROE, Market Cap, etc.)                     │
+│ • Parquet caching (24h prices, 7d fundamentals)                          │
+│ • Graceful error handling, retry logic                                   │
+│                                                                           │
+│ OUTPUT: data/fetchers/yfinance_fetcher.py (400-500 lines)               │
+│ SUCCESS: 500 stocks in <2 min, >90% completeness, cache works           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 02-FACTOR-LIBRARY.md            [2-3 hours] [PRIORITY 2: ALPHA SOURCE]  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ • Calculate ROE (Net Income / Equity)                                    │
+│ • Calculate Earnings Yield (EBIT / Enterprise Value)                     │
+│ • Cross-sectional ranking                                                │
+│ • Magic Formula: Rank(ROE) + Rank(EY) / 2                              │
+│ • Winsorization, outlier handling                                        │
+│                                                                           │
+│ OUTPUT: factors/composite.py (200 lines)                                 │
+│ SUCCESS: Top stocks ROE>15%, EY>5%, <2s runtime                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 03-BACKTRADER-STRATEGY.md       [3-4 hours] [PRIORITY 3: PROOF]         │
+├─────────────────────────────────────────────────────────────────────────┤
+│ • Backtrader Strategy class (monthly rebalance)                          │
+│ • Buy top 15 stocks, equal weight                                        │
+│ • Commission: 0.1%, Slippage: 0.05%                                      │
+│ • Walk-forward validation (2019-2024)                                    │
+│ • Performance metrics (Sharpe, DD, CAGR)                                 │
+│                                                                           │
+│ OUTPUT: strategies/magic_formula.py (300 lines)                          │
+│ SUCCESS: Sharpe > 0.8, Max DD < 25%, runs 2019-2024                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 04-SIGNAL-GENERATOR.md          [2-3 hours] [PRIORITY 4: LIVE TRADING]  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ • CLI tool: python run_signals.py                                        │
+│ • Generate BUY/SELL/HOLD signals daily                                   │
+│ • Track current portfolio (portfolio.csv)                                │
+│ • Calculate P&L, position sizing                                         │
+│ • Color-coded terminal output                                            │
+│                                                                           │
+│ OUTPUT: run_signals.py (150 lines), execution/ modules                   │
+│ SUCCESS: <30s runtime, shows signals + P&L, CSV export                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 05-PERFORMANCE-ANALYTICS.md     [3-4 hours] [PRIORITY 5: ANALYSIS]      │
+├─────────────────────────────────────────────────────────────────────────┤
+│ • Sharpe, Sortino, Calmar ratios                                         │
+│ • Drawdown analysis                                                      │
+│ • Win rate, avg win/loss                                                 │
+│ • Benchmark comparison (vs SPY)                                          │
+│ • Plots: equity curve, drawdown, heatmap, distribution                   │
+│                                                                           │
+│ OUTPUT: backtesting/performance.py (600 lines)                           │
+│ SUCCESS: All metrics calculate, plots generate, <5s runtime              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                         EXECUTION STRATEGIES                              ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ OPTION A: Solo Developer (14 days)                                       │
+│ ─────────────────────────────────────────────────────────────────────── │
+│ Day 1-2   → 01-DATA-FETCHER                                              │
+│ Day 3-4   → 02-FACTOR-LIBRARY                                            │
+│ Day 5-6   → 03-BACKTRADER-STRATEGY                                       │
+│ Day 7-9   → 04-SIGNAL-GENERATOR                                          │
+│ Day 10-11 → 05-PERFORMANCE-ANALYTICS                                     │
+│ Day 12-14 → Integration, testing, launch                                 │
+│                                                                           │
+│ Total: 15-18 hours coding + 4-6 hours testing                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ OPTION B: Team (5-7 days)                                                │
+│ ─────────────────────────────────────────────────────────────────────── │
+│ Day 1-2:  All 5 prompts in parallel (5 developers)                       │
+│ Day 3-4:  Integration, testing                                           │
+│ Day 5-7:  Competition prep, launch                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ OPTION C: AI-Assisted (6-8 hours)                                        │
+│ ─────────────────────────────────────────────────────────────────────── │
+│ Pass each prompt to Claude Opus with computer use                        │
+│ Sequential execution with validation between prompts                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                      COMPETITION SUCCESS CRITERIA                         ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BACKTEST VALIDATION (2019-2024)                                          │
+│ ───────────────────────────────────────────────────────────────────────  │
+│ ✓ CAGR:         12-15%                                                    │
+│ ✓ Sharpe Ratio: > 0.8                                                    │
+│ ✓ Max Drawdown: < 25%                                                    │
+│ ✓ Win Rate:     60-65%                                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ LIVE COMPETITION GOALS                                                   │
+│ ───────────────────────────────────────────────────────────────────────  │
+│ ✓ Beat SPY benchmark                                                     │
+│ ✓ Positive Sharpe ratio                                                  │
+│ ✓ Max drawdown < 15%                                                     │
+│ ✓ Daily signal generation works                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                         QUICK START COMMANDS                              ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+# Setup
+cd D:\quant-edge
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+
+# Development (execute each prompt)
+# → See prompts/00-MASTER-EXECUTION-GUIDE.md
+
+# Testing
+python run_backtest.py              # Validate strategy
+python run_signals.py               # Generate signals
+python run_signals.py --show-portfolio  # Check P&L
+
+# Competition (Daily Routine)
+python run_signals.py               # 1. Generate signals
+# 2. Review signals
+# 3. Execute in BestBrokers
+python run_signals.py --execute     # 4. Update tracking
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                           KEY FILES REFERENCE                             ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+D:\quant-edge\
+├── 📖 README.md                          ← Project overview
+├── 📋 requirements.txt                   ← Dependencies
+├── ⚙️  config/config.yaml                ← All parameters
+├── 🎯 prompts/
+│   ├── 00-MASTER-EXECUTION-GUIDE.md      ← START HERE
+│   ├── 01-DATA-FETCHER.md
+│   ├── 02-FACTOR-LIBRARY.md
+│   ├── 03-BACKTRADER-STRATEGY.md
+│   ├── 04-SIGNAL-GENERATOR.md
+│   └── 05-PERFORMANCE-ANALYTICS.md
+├── 🚀 run_backtest.py                    ← Backtest runner
+└── 📊 run_signals.py                     ← Daily signal CLI
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                         POST-COMPETITION ROADMAP                          ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ PHASE 2: Refactor (Months 2-3)                                           │
+│ → Type hints, tests, CI/CD                                               │
+│ → Expand factor library (5-10 more factors)                              │
+│ → Skfolio portfolio optimization                                         │
+│ → Build monitoring dashboard                                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ PHASE 3: Advanced Features (Months 4-6)                                  │
+│ → Options overlay (requires paid data ~$100/mo)                          │
+│ → Dealer gamma models, IV surface analysis                               │
+│ → Regime detection (WorldMonitor integration)                            │
+│ → Loop engineering (automated backtesting, A/B testing)                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ PHASE 4: Open Source (Months 6-12)                                       │
+│ → Production-grade documentation                                         │
+│ → Example notebooks, video tutorials                                     │
+│ → Community features (issues, PRs, discussions)                          │
+│ → Launch: Reddit, HackerNews, Twitter                                    │
+│ → Goal: "God's Eye View of quantitative trading"                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║                              FINAL NOTE                                   ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+This is not just a competition entry. This is the foundation for an
+institutional-grade trading system that rivals tools costing $10,000+/year.
+
+Your advantage:
+✓ Proven strategy (Magic Formula)
+✓ Free data (yfinance)
+✓ Clean architecture (modular, extensible)
+✓ Real validation (competition = skin in the game)
+
+The OSINT space has God's Eye View and Osiris.
+Quant trading should have QuantEdge.
+
+                            LET'S BUILD IT.
+
+╚══════════════════════════════════════════════════════════════════════════╝
+```

@@ -1,0 +1,756 @@
+# PROMPT 06: INSTITUTIONAL OPTIONS MARKET MICROSTRUCTURE ENGINE
+
+## Context
+
+I have a quantitative trading system at `D:\quant-edge\` (GitHub: freddysccheung-067/quant-edge).
+
+**Current State:**
+- Production-grade equity factor model (Magic Formula)
+- Backtesting engine with institutional metrics
+- Portfolio optimizer with multiple methods
+- S&P 500 universe with fundamental data
+
+**Missing:**
+The original vision was "God's Eye View for markets" - seeing what institutional dealers MUST do before they do it. That requires **options market microstructure analysis**.
+
+---
+
+## Objective
+
+Build a **dealer positioning analytics engine** that gives us institutional-grade visibility into:
+1. **Dealer gamma exposure** - Where market makers are net long/short gamma and must hedge
+2. **Delta-gamma hedging flows** - Predict SPY buying/selling pressure from dealer rebalancing
+3. **Strike concentrations** - Identify key strike levels that drive market behavior
+4. **Convexity exposure** - Second-order Greeks that amplify moves
+5. **Implied volatility surface** - Detect volatility regime changes
+
+This is the kind of analysis that Renaissance Technologies, Citadel, and Jane Street use. We're building it from scratch.
+
+---
+
+## Required Background Knowledge
+
+### Dealer Mechanics 101
+
+**Options Market Makers (Dealers):**
+- Sell options to customers (hedged dynamically)
+- Must stay delta-neutral by trading the underlying (SPY)
+- Their hedging creates predictable flows in the spot market
+
+**Key Greeks:**
+- **Delta (Δ)**: Sensitivity to price change. 1 contract = ±50 delta (per $1 move)
+- **Gamma (Γ)**: Rate of change of delta. Dealer short gamma → must buy high, sell low (destabilizing)
+- **Vanna**: Sensitivity to vol changes. Dealer short vanna → vol up = buy spot
+- **Charm**: Delta decay with time. Dealer short charm → must buy into expiry
+
+**The Trade:**
+1. Aggregate all SPY options (calls & puts, all strikes, near-dated)
+2. Calculate **net dealer positioning** (assume we're contra-side to customer flow)
+3. When dealers are **short gamma** (negative Γ):
+   - SPY up → dealers must sell SPY (dampen rally)
+   - SPY down → dealers must buy SPY (dampen selloff)
+   - **Result: Market is range-bound, choppy**
+4. When dealers are **long gamma** (positive Γ):
+   - SPY up → dealers sell into strength (provide liquidity)
+   - SPY down → dealers buy dips (stabilize market)
+   - **Result: Market is trending, directional**
+
+**Our Signal:**
+- Dealer short gamma < -$5B → Reduce equity exposure (choppy market coming)
+- Dealer long gamma > +$2B → Increase equity exposure (trends incoming)
+
+---
+
+## Architecture
+
+### Module Structure
+
+```
+options/
+├── __init__.py
+├── data/
+│   ├── __init__.py
+│   ├── fetchers.py          # Fetch options chain data
+│   └── cache/               # Parquet cache for options data
+├── analytics/
+│   ├── __init__.py
+│   ├── greeks.py            # Calculate all Greeks analytically
+│   ├── dealer_positioning.py # Aggregate dealer gamma/delta/vanna
+│   ├── strike_profile.py    # Build gamma/delta profiles by strike
+│   └── surface.py           # Implied vol surface modeling
+├── signals/
+│   ├── __init__.py
+│   ├── gamma_regime.py      # Generate regime signals (long/short gamma)
+│   └── level_signals.py     # Key strike level signals
+└── visualization/
+    ├── __init__.py
+    ├── gamma_chart.py       # Net dealer gamma over time
+    ├── strike_profile_chart.py # Gamma profile by strike
+    └── surface_chart.py     # 3D vol surface
+```
+
+---
+
+## Requirements
+
+### 1. Options Data Fetcher (`options/data/fetchers.py`)
+
+```python
+class OptionsDataFetcher:
+    """
+    Fetch and cache SPY options chain data.
+
+    Data sources (in order of preference):
+    1. CBOE DataShop API (free, 20-min delay) - Preferred
+    2. YFinance options (free, real-time) - Fallback
+    3. Polygon.io (paid, $200/mo) - Production upgrade path
+    """
+
+    def __init__(self, source: str = "yfinance"):
+        """
+        Args:
+            source: "yfinance", "cboe", or "polygon"
+        """
+        self.source = source
+        self.cache_dir = Path("options/data/cache")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def fetch_options_chain(self,
+                           symbol: str = "SPY",
+                           date: datetime = None) -> pd.DataFrame:
+        """
+        Fetch full options chain for a symbol.
+
+        Returns DataFrame with:
+            expiration | strike | type (call/put) | last_price | bid | ask |
+            volume | open_interest | implied_volatility | delta | gamma |
+            vega | theta | rho
+
+        For YFinance: Greeks must be calculated (next step)
+        For CBOE/Polygon: Greeks included in data
+        """
+
+    def get_spot_price(self, symbol: str = "SPY", date: datetime = None) -> float:
+        """Get current/historical spot price."""
+
+    def get_risk_free_rate(self, date: datetime = None) -> float:
+        """
+        Get risk-free rate for options pricing.
+        Use 13-week T-bill rate from FRED API or fixed 4%.
+        """
+
+    def get_dividend_yield(self, symbol: str = "SPY") -> float:
+        """Get annualized dividend yield for SPY."""
+
+    def cache_options_data(self, data: pd.DataFrame, symbol: str, date: datetime):
+        """Cache to parquet with date-based filename."""
+
+    def load_cached_options(self, symbol: str, date: datetime) -> Optional[pd.DataFrame]:
+        """Load from cache if available."""
+```
+
+**Key Points:**
+- Cache aggressively (options data is expensive to fetch)
+- Handle multiple expirations (focus on 0-60 DTE)
+- Filter out illiquid strikes (OI < 100, bid-ask > 20% of mid)
+- Clean data: remove bad prints, validate Greeks sum correctly
+
+---
+
+### 2. Greeks Calculator (`options/analytics/greeks.py`)
+
+Implement **Black-Scholes-Merton model** for analytical Greeks.
+
+```python
+class GreeksCalculator:
+    """
+    Calculate all first and second-order Greeks analytically.
+
+    Uses Black-Scholes-Merton for European-style options.
+    SPY options are American but BSM is close enough for our purpose.
+    """
+
+    def __init__(self):
+        pass
+
+    def calculate_greeks(self,
+                        spot: float,
+                        strike: float,
+                        time_to_expiry: float,  # Years
+                        volatility: float,  # Implied vol (annualized)
+                        risk_free_rate: float,
+                        dividend_yield: float,
+                        option_type: str) -> Dict[str, float]:
+        """
+        Calculate all Greeks for one option.
+
+        Returns:
+            {
+                'delta': float,
+                'gamma': float,
+                'vega': float,
+                'theta': float,
+                'rho': float,
+                'vanna': float,  # dDelta/dVol
+                'charm': float,  # dDelta/dTime
+                'vomma': float,  # dVega/dVol
+                'speed': float   # dGamma/dSpot
+            }
+        """
+        # Black-Scholes formulas:
+        # Delta_call = N(d1)
+        # Delta_put = N(d1) - 1
+        # Gamma = N'(d1) / (S * σ * sqrt(T))
+        # Vega = S * N'(d1) * sqrt(T)
+        # Theta_call = ... (see formula)
+        # Vanna = -N'(d1) * d2 / σ
+        # Charm = -N'(d1) * [2*r*T - d2*σ*sqrt(T)] / (2*T*σ*sqrt(T))
+
+    def _calculate_d1_d2(self, spot: float, strike: float,
+                        time_to_expiry: float, volatility: float,
+                        risk_free_rate: float, dividend_yield: float) -> Tuple[float, float]:
+        """
+        Calculate d1 and d2 from Black-Scholes formula.
+
+        d1 = [ln(S/K) + (r - q + σ²/2)T] / (σ√T)
+        d2 = d1 - σ√T
+        """
+
+    def _normal_cdf(self, x: float) -> float:
+        """Standard normal CDF using scipy.stats.norm."""
+
+    def _normal_pdf(self, x: float) -> float:
+        """Standard normal PDF."""
+
+    def batch_calculate_greeks(self, options_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate Greeks for entire options chain efficiently.
+
+        Vectorized implementation for speed.
+        """
+```
+
+**Validation:**
+- Delta: -1 to 0 for puts, 0 to 1 for calls
+- Gamma: Always positive, peaks at-the-money
+- Vega: Always positive
+- Theta: Usually negative (time decay)
+- Sum of call/put deltas at same strike ≈ 1 (put-call parity)
+
+---
+
+### 3. Dealer Positioning Engine (`options/analytics/dealer_positioning.py`)
+
+This is the core intelligence layer.
+
+```python
+class DealerPositioningAnalyzer:
+    """
+    Aggregate options chain to calculate net dealer positioning.
+
+    Assumption: Customers are net buyers of options (hedging/speculation).
+    Therefore, dealers are net sellers → we reverse sign.
+    """
+
+    def __init__(self, options_data: pd.DataFrame, spot_price: float):
+        """
+        Args:
+            options_data: Full options chain with Greeks
+            spot_price: Current SPY price
+        """
+        self.options_data = options_data
+        self.spot_price = spot_price
+
+    def calculate_net_dealer_exposure(self) -> Dict[str, float]:
+        """
+        Calculate aggregate dealer exposures.
+
+        For each option contract:
+        - Dealer delta = -100 * delta * open_interest * (1 if dealer sold else -1)
+        - Dealer gamma = -100 * gamma * open_interest * (1 if dealer sold else -1)
+
+        Assumptions:
+        - Open interest = # contracts outstanding
+        - 1 contract = 100 shares exposure
+        - Dealers are contra-side (reverse sign)
+
+        Returns:
+            {
+                'net_dealer_delta': float (shares of SPY exposure),
+                'net_dealer_gamma': float (delta change per $1 SPY move),
+                'net_dealer_vanna': float,
+                'net_dealer_charm': float,
+                'gamma_notional': float (gamma * spot² for dollar exposure),
+                'gamma_flip_level': float (spot price where gamma = 0)
+            }
+        """
+
+        # Customer flow assumption: more call buying above spot, put buying below
+        # Use volume-weighted heuristic or fixed assumption
+
+    def calculate_gamma_exposure_by_strike(self) -> pd.DataFrame:
+        """
+        Break down gamma exposure by strike level.
+
+        Returns DataFrame:
+            strike | call_gamma | put_gamma | net_gamma |
+            call_oi | put_oi | distance_from_spot
+
+        Useful for identifying "gamma walls" - strikes with huge OI.
+        """
+
+    def estimate_hedging_flow(self, spot_move: float) -> float:
+        """
+        Estimate dealer hedging flow for a given spot move.
+
+        Args:
+            spot_move: Hypothetical SPY price change (e.g., +1.0 = $1 up)
+
+        Returns:
+            Estimated shares dealers must buy/sell to stay delta-neutral.
+
+        Formula:
+            Flow = -dealer_gamma * spot_move
+
+        Negative gamma → must buy on rallies (bad for momentum)
+        Positive gamma → must sell on rallies (good for momentum)
+        """
+
+    def calculate_gamma_flip_level(self) -> float:
+        """
+        Find the SPY price level where dealer gamma flips from negative to positive.
+
+        This is a critical level:
+        - Above: Dealers are supportive (long gamma)
+        - Below: Dealers are destabilizing (short gamma)
+
+        Often called the "zero gamma strike" or "dealer pivot".
+        """
+
+    def historical_positioning_series(self,
+                                     start_date: str,
+                                     end_date: str) -> pd.DataFrame:
+        """
+        Calculate dealer positioning over time.
+
+        Returns DataFrame:
+            date | spot_price | dealer_gamma | dealer_delta |
+            gamma_flip | regime (long/short)
+
+        Requires fetching historical options chains (expensive!).
+        Cache aggressively.
+        """
+```
+
+**Key Metrics:**
+- **Net Dealer Gamma** < -$5B → Choppy market, mean-reverting
+- **Net Dealer Gamma** > +$2B → Trending market, momentum
+- **Gamma Flip Level** - Critical support/resistance level
+- **Vanna Exposure** - Volatility sensitivity (vol up → spot ?)
+
+---
+
+### 4. Signal Generation (`options/signals/gamma_regime.py`)
+
+```python
+class GammaRegimeSignal:
+    """
+    Generate trading signals based on dealer gamma regime.
+
+    Strategy:
+    - Dealer short gamma (< -$3B) → Reduce equity exposure to 70%
+    - Dealer long gamma (> +$1B) → Increase equity exposure to 100%
+    - Neutral → 85% exposure
+    """
+
+    def __init__(self, threshold_short: float = -3e9,
+                      threshold_long: float = 1e9):
+        self.threshold_short = threshold_short
+        self.threshold_long = threshold_long
+
+    def generate_signal(self, dealer_gamma: float) -> Dict[str, Any]:
+        """
+        Generate signal from dealer gamma reading.
+
+        Returns:
+            {
+                'regime': 'short_gamma' | 'long_gamma' | 'neutral',
+                'equity_exposure': float (0.0 to 1.0),
+                'confidence': float (0.0 to 1.0),
+                'reason': str
+            }
+        """
+
+    def backtest_regime_strategy(self,
+                                historical_gamma: pd.DataFrame,
+                                spy_prices: pd.DataFrame) -> pd.DataFrame:
+        """
+        Backtest gamma-aware exposure management.
+
+        Compare:
+        1. Buy-and-hold SPY (100% exposure)
+        2. Gamma-aware (70-100% exposure based on regime)
+
+        Hypothesis: Gamma-aware reduces drawdowns without sacrificing returns.
+        """
+
+class StrikeLevelSignal:
+    """
+    Generate signals from strike-level concentrations.
+
+    "Gamma walls" at major strikes create support/resistance.
+    """
+
+    def identify_gamma_walls(self, strike_profile: pd.DataFrame,
+                            top_n: int = 5) -> List[float]:
+        """
+        Find strikes with highest gamma concentration.
+
+        These act as magnets - price tends to pin near large gamma strikes
+        into expiration (OpEx pinning effect).
+        """
+
+    def expiration_pinning_forecast(self,
+                                   strikes_with_gamma: pd.DataFrame,
+                                   days_to_expiry: int) -> Dict[str, float]:
+        """
+        Predict where SPY will pin into Friday expiry.
+
+        High gamma strikes have gravitational pull.
+        Useful for 0DTE option traders.
+        """
+```
+
+---
+
+### 5. Visualization (`options/visualization/`)
+
+```python
+def plot_dealer_gamma_timeseries(gamma_history: pd.DataFrame,
+                                spy_prices: pd.DataFrame,
+                                save_path: str = None):
+    """
+    Plot dealer gamma over time with SPY price overlay.
+
+    Two-panel chart:
+    - Top: SPY price
+    - Bottom: Dealer gamma (color-coded: red = short, green = long)
+
+    Highlight regime changes (crosses zero).
+    """
+
+def plot_gamma_profile_by_strike(strike_profile: pd.DataFrame,
+                                current_spot: float,
+                                save_path: str = None):
+    """
+    Plot gamma exposure by strike level.
+
+    Bar chart:
+    - X-axis: Strike price
+    - Y-axis: Net gamma
+    - Vertical line: Current spot
+    - Color: Green (calls), Red (puts)
+
+    Identify "walls" visually.
+    """
+
+def plot_3d_volatility_surface(options_data: pd.DataFrame,
+                               save_path: str = None):
+    """
+    Plot implied volatility surface.
+
+    3D surface plot:
+    - X-axis: Strike (% of spot)
+    - Y-axis: Time to expiry (days)
+    - Z-axis: Implied volatility
+
+    Detect skew, term structure, volatility smile.
+    """
+
+def plot_dealer_positioning_dashboard(positioning_data: Dict[str, Any],
+                                     save_path: str = None):
+    """
+    Comprehensive dashboard:
+    - Gauge: Current gamma regime
+    - Time series: Gamma over 30 days
+    - Strike profile: Current gamma by strike
+    - Key metrics table
+    """
+```
+
+---
+
+### 6. Integration Script (`examples/run_options_analysis.py`)
+
+```python
+"""
+Example: Daily options market microstructure analysis.
+
+Run this every morning before market open to get:
+1. Current dealer gamma positioning
+2. Key strike levels to watch
+3. Regime classification
+4. Equity exposure recommendation
+"""
+
+from options.data.fetchers import OptionsDataFetcher
+from options.analytics.greeks import GreeksCalculator
+from options.analytics.dealer_positioning import DealerPositioningAnalyzer
+from options.signals.gamma_regime import GammaRegimeSignal
+from options.visualization.gamma_chart import plot_dealer_positioning_dashboard
+
+def main():
+    print("="*80)
+    print("SPY OPTIONS MARKET MICROSTRUCTURE ANALYSIS")
+    print("="*80)
+
+    # Fetch data
+    fetcher = OptionsDataFetcher(source="yfinance")
+    print("\n[1/5] Fetching SPY options chain...")
+    options_chain = fetcher.fetch_options_chain("SPY")
+    spot_price = fetcher.get_spot_price("SPY")
+    print(f"      SPY spot: ${spot_price:.2f}")
+    print(f"      Options fetched: {len(options_chain)} contracts")
+
+    # Calculate Greeks if not included
+    if 'gamma' not in options_chain.columns:
+        print("\n[2/5] Calculating Greeks...")
+        greeks_calc = GreeksCalculator()
+        options_chain = greeks_calc.batch_calculate_greeks(options_chain)
+        print(f"      Greeks calculated for {len(options_chain)} contracts")
+    else:
+        print("\n[2/5] Greeks already in data, skipping calculation.")
+
+    # Analyze dealer positioning
+    print("\n[3/5] Analyzing dealer positioning...")
+    analyzer = DealerPositioningAnalyzer(options_chain, spot_price)
+    positioning = analyzer.calculate_net_dealer_exposure()
+
+    print(f"\n      DEALER POSITIONING:")
+    print(f"      Net Gamma:      ${positioning['gamma_notional']/1e9:.2f}B")
+    print(f"      Net Delta:      {positioning['net_dealer_delta']/1e6:.1f}M shares")
+    print(f"      Gamma Flip:     ${positioning['gamma_flip_level']:.2f}")
+
+    # Generate signal
+    print("\n[4/5] Generating trading signal...")
+    signal_gen = GammaRegimeSignal()
+    signal = signal_gen.generate_signal(positioning['gamma_notional'])
+
+    print(f"\n      SIGNAL:")
+    print(f"      Regime:         {signal['regime']}")
+    print(f"      Equity Exposure: {signal['equity_exposure']:.0%}")
+    print(f"      Confidence:     {signal['confidence']:.0%}")
+    print(f"      Reason:         {signal['reason']}")
+
+    # Visualize
+    print("\n[5/5] Generating dashboard...")
+    plot_dealer_positioning_dashboard(positioning, save_path="options/dashboard.png")
+    print("      Dashboard saved: options/dashboard.png")
+
+    print("\n" + "="*80)
+    print("✅ Analysis complete!")
+    print("="*80)
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+### 7. Integration with Portfolio System
+
+Modify `run_system.py` to incorporate options signal:
+
+```python
+# Get options-based regime signal
+from options.signals.gamma_regime import GammaRegimeSignal
+signal_gen = GammaRegimeSignal()
+regime_signal = signal_gen.generate_signal(current_dealer_gamma)
+
+# Adjust equity exposure
+base_weights = portfolio_optimizer.optimize(...)  # Magic Formula weights
+adjusted_weights = {
+    ticker: weight * regime_signal['equity_exposure']
+    for ticker, weight in base_weights.items()
+}
+
+# Rest goes to cash (via portfolio.optimizer.py cash allocation)
+```
+
+**Result:**
+- Dealer short gamma → Hold 30% cash, 70% equity (defensive)
+- Dealer long gamma → 100% equity (aggressive)
+- Smooth transitions (not binary switches)
+
+---
+
+## Testing (`test_options_engine.py`)
+
+```python
+class TestGreeksCalculator(unittest.TestCase):
+
+    def test_call_delta_range(self):
+        """Call delta should be 0 to 1."""
+        calc = GreeksCalculator()
+        greeks = calc.calculate_greeks(
+            spot=450, strike=450, time_to_expiry=0.25,
+            volatility=0.20, risk_free_rate=0.04,
+            dividend_yield=0.015, option_type='call'
+        )
+        self.assertGreater(greeks['delta'], 0)
+        self.assertLess(greeks['delta'], 1)
+
+    def test_gamma_always_positive(self):
+        """Gamma is always positive for both calls and puts."""
+        calc = GreeksCalculator()
+        for option_type in ['call', 'put']:
+            greeks = calc.calculate_greeks(
+                spot=450, strike=450, time_to_expiry=0.25,
+                volatility=0.20, risk_free_rate=0.04,
+                dividend_yield=0.015, option_type=option_type
+            )
+            self.assertGreater(greeks['gamma'], 0)
+
+    def test_put_call_parity(self):
+        """Call delta - Put delta should ≈ 1."""
+        calc = GreeksCalculator()
+        call = calc.calculate_greeks(
+            spot=450, strike=450, time_to_expiry=0.25,
+            volatility=0.20, risk_free_rate=0.04,
+            dividend_yield=0.015, option_type='call'
+        )
+        put = calc.calculate_greeks(
+            spot=450, strike=450, time_to_expiry=0.25,
+            volatility=0.20, risk_free_rate=0.04,
+            dividend_yield=0.015, option_type='put'
+        )
+        parity = call['delta'] - put['delta']
+        self.assertAlmostEqual(parity, 1.0, places=2)
+
+class TestDealerPositioning(unittest.TestCase):
+
+    def test_gamma_flip_calculation(self):
+        """Gamma flip level should be between min and max strike."""
+        # Create synthetic options chain
+        # ... test logic
+
+    def test_hedging_flow_sign(self):
+        """Negative gamma → flow opposite to price move."""
+        # Test that short gamma produces correct flow direction
+```
+
+---
+
+## Expected Performance Impact
+
+**Before Options Signal (Pure Magic Formula):**
+- Sharpe Ratio: 0.87
+- Max Drawdown: -23.1%
+- Calmar Ratio: 0.48
+
+**After Options Signal (Gamma-Aware Exposure):**
+- Sharpe Ratio: **1.05** (↑21%)
+- Max Drawdown: **-18.5%** (↓20% shallower)
+- Calmar Ratio: **0.61** (↑27%)
+- Win Rate: **61%** (from 58%)
+
+**Why it works:**
+- Reduces exposure during choppy/dangerous markets (dealer short gamma)
+- Increases exposure during trending markets (dealer long gamma)
+- Avoids the worst drawdowns without sacrificing upside
+
+---
+
+## Data Sources & Costs
+
+**Free Options:**
+1. **YFinance** - Free, 15-min delay, basic greeks
+   - Pros: Zero cost, easy integration
+   - Cons: Unreliable, missing expirations, no historical
+
+2. **CBOE DataShop** - Free, 20-min delay, full greeks
+   - Pros: Official exchange data, comprehensive
+   - Cons: Requires API signup, rate limits
+
+**Paid Options (Production Upgrade):**
+1. **Polygon.io** - $200/mo, real-time, historical
+   - Use this once strategy is validated and funded
+
+2. **IBKR TWS API** - Free with Interactive Brokers account
+   - Best for live trading integration
+
+**Start with YFinance, upgrade to Polygon.io after competition proves concept.**
+
+---
+
+## Stretch Goals
+
+1. **Vanna-Volga strategies** - Trade spot based on vol-delta correlation
+2. **Charm decay analysis** - Intraday delta decay patterns
+3. **Cross-asset gamma** - Analyze TLT (bonds), GLD (gold) options too
+4. **0DTE options strategy** - Trade same-day expiry based on gamma pinning
+5. **Dealer inventory model** - Estimate dealer P&L, predict when they'll hedge
+6. **Multi-strike strategies** - Iron condors, butterflies at key gamma levels
+
+---
+
+## Deliverables
+
+1. `options/data/fetchers.py` - Options data pipeline (~300 lines)
+2. `options/analytics/greeks.py` - Greeks calculator (~400 lines)
+3. `options/analytics/dealer_positioning.py` - Positioning analyzer (~500 lines)
+4. `options/signals/gamma_regime.py` - Signal generator (~250 lines)
+5. `options/visualization/` - 4 visualization functions (~300 lines)
+6. `examples/run_options_analysis.py` - Daily analysis script (~150 lines)
+7. `test_options_engine.py` - Comprehensive tests (~400 lines)
+8. `docs/OPTIONS_MICROSTRUCTURE.md` - Full documentation
+
+**Total estimate: ~2,300 lines of production code**
+
+---
+
+## Success Criteria
+
+Run this:
+```bash
+python examples/run_options_analysis.py
+```
+
+Output:
+```
+================================================================================
+SPY OPTIONS MARKET MICROSTRUCTURE ANALYSIS
+================================================================================
+
+[1/5] Fetching SPY options chain...
+      SPY spot: $452.30
+      Options fetched: 1,247 contracts
+
+[2/5] Calculating Greeks...
+      Greeks calculated for 1,247 contracts
+
+[3/5] Analyzing dealer positioning...
+      DEALER POSITIONING:
+      Net Gamma:      -$4.2B
+      Net Delta:      +12.3M shares
+      Gamma Flip:     $448.50
+
+[4/5] Generating trading signal...
+      SIGNAL:
+      Regime:         short_gamma
+      Equity Exposure: 70%
+      Confidence:     85%
+      Reason:         Dealers short gamma below threshold (-$4.2B < -$3.0B).
+                      Expect choppy, mean-reverting market. Reduce risk.
+
+[5/5] Generating dashboard...
+      Dashboard saved: options/dashboard.png
+
+================================================================================
+✅ Analysis complete!
+================================================================================
+```
+
+And the dashboard PNG shows professional-grade options analytics that would impress a portfolio manager at Citadel.
+
+**This is your unique edge. Build it right.**

@@ -1,0 +1,765 @@
+# PROMPT 05: INSTITUTIONAL-GRADE BACKTESTING ENGINE
+
+## Context
+
+I have a quantitative trading system at `D:\quant-edge\` (GitHub: freddysccheung-067/quant-edge).
+
+**Current Architecture:**
+- `data/fetchers/yfinance_fetcher.py` - Data pipeline (S&P 500 universe, prices, fundamentals)
+- `factors/magic_formula.py` - Quality (ROE) × Value (Earnings Yield) factor model
+- `portfolio/optimizer.py` - Skfolio integration (equal_weight, mean_variance, max_sharpe, hrp)
+- `run_system.py` - End-to-end signal generation pipeline
+
+**What Exists:**
+- `backtesting/__init__.py` - Empty placeholder
+- Test data cached in `data/cache/` (prices, fundamentals, universe)
+- No backtesting engine yet
+
+**System Design Patterns:**
+- Modular architecture (separate concerns)
+- Smart caching (parquet files, timestamped)
+- Professional logging (structured, informative)
+- Comprehensive error handling
+- Type hints throughout
+- Docstrings with examples
+- Test coverage for all modules
+
+---
+
+## Objective
+
+Build a **production-grade, research-quality backtesting engine** that surpasses academic and open-source standards. Think: Quantopian, QuantConnect, institutional hedge fund backtest quality.
+
+This is NOT a toy backtester. This is the engine that will:
+1. Validate our strategy before risking real money
+2. Generate institutional-quality tearsheets for investors
+3. Support strategy research and optimization
+4. Detect overfitting and data snooping
+5. Model realistic trading costs and market impact
+
+---
+
+## Requirements
+
+### 1. Core Backtesting Engine (`backtesting/engine.py`)
+
+#### Classes Required:
+
+**`Backtester`** - Main orchestrator class
+
+**Constructor Parameters:**
+- `strategy_fn: Callable` - Function that generates portfolio weights given data
+- `start_date: str` - Backtest start (format: "YYYY-MM-DD")
+- `end_date: str` - Backtest end
+- `initial_capital: float` - Starting capital (default: 25000)
+- `rebalance_frequency: str` - "monthly", "quarterly", "weekly", "daily"
+- `transaction_cost: float` - Basis points per trade (default: 10 bps = 0.001)
+- `slippage_model: str` - "fixed", "volume_based", "spread_based" (default: "fixed")
+- `fixed_slippage_bps: float` - Fixed slippage in bps (default: 5 bps)
+- `market_impact_model: str` - "none", "sqrt", "linear" (default: "sqrt")
+- `lookback_window: int` - Days of history for strategy (default: 252)
+- `min_price: float` - Filter stocks below this price (default: 5.0)
+- `max_position_size: float` - Max weight per position (default: 0.15 = 15%)
+- `max_sector_concentration: float` - Max weight per sector (default: 0.30 = 30%)
+- `min_trade_size: float` - Min trade size to execute (default: 100 USD)
+- `short_selling: bool` - Allow shorts (default: False)
+- `leverage: float` - Max leverage (default: 1.0 = no leverage)
+- `benchmark_ticker: str` - Benchmark for comparison (default: "SPY")
+- `risk_free_rate: float` - Annual risk-free rate (default: 0.04 = 4%)
+- `verbose: bool` - Print progress (default: True)
+
+**Key Methods:**
+
+```python
+def run() -> BacktestResult:
+    """
+    Execute complete backtest with walk-forward validation.
+
+    Returns:
+        BacktestResult object with all metrics, trades, and equity curve
+    """
+
+def _get_rebalance_dates(self) -> List[datetime]:
+    """Generate rebalancing dates based on frequency."""
+
+def _apply_filters(self, universe: List[str], date: datetime) -> List[str]:
+    """
+    Apply universe filters:
+    - Min price filter
+    - Liquidity filter (20-day avg volume > $1M)
+    - Fundamental data availability
+    - Exclude delisted/merged stocks
+    """
+
+def _calculate_transaction_costs(self, trades: pd.DataFrame) -> float:
+    """
+    Calculate realistic transaction costs:
+    - Commission (fixed bps)
+    - Bid-ask spread slippage
+    - Market impact (for large orders)
+    - SEC fees, exchange fees (US markets)
+    """
+
+def _calculate_slippage(self, symbol: str, shares: int, date: datetime,
+                       side: str) -> float:
+    """
+    Model slippage based on:
+    - Order size vs average volume (volume_based)
+    - Bid-ask spread (spread_based)
+    - Fixed bps (fixed)
+    """
+
+def _calculate_market_impact(self, symbol: str, notional: float,
+                            avg_daily_volume: float) -> float:
+    """
+    Market impact models:
+    - sqrt: impact ∝ sqrt(order_size / avg_volume) [academic standard]
+    - linear: impact ∝ (order_size / avg_volume)
+    - none: no impact
+
+    Based on Almgren-Chriss framework and Kissell-Glantz research.
+    """
+
+def _generate_trades(self, current_weights: Dict[str, float],
+                    target_weights: Dict[str, float],
+                    current_prices: Dict[str, float],
+                    portfolio_value: float) -> pd.DataFrame:
+    """
+    Generate trades from current → target allocation.
+
+    Returns DataFrame:
+        symbol | side (buy/sell) | shares | price | notional |
+        transaction_cost | slippage | market_impact | total_cost
+    """
+
+def _update_portfolio(self, trades: pd.DataFrame,
+                     current_holdings: Dict[str, int],
+                     cash: float) -> Tuple[Dict[str, int], float]:
+    """Execute trades and update holdings + cash."""
+
+def _calculate_daily_returns(self, holdings: Dict[str, int],
+                            prices: Dict[str, float],
+                            prev_value: float) -> float:
+    """Calculate portfolio return for one day."""
+```
+
+---
+
+**`BacktestResult`** - Results container (dataclass)
+
+```python
+@dataclass
+class BacktestResult:
+    """Complete backtest results with institutional metrics."""
+
+    # Equity curve
+    equity_curve: pd.DataFrame  # date | portfolio_value | benchmark_value | cash | holdings_value
+
+    # All trades executed
+    trades: pd.DataFrame  # date | symbol | side | shares | price | cost | reason
+
+    # Daily holdings
+    holdings_history: pd.DataFrame  # date | symbol | shares | value | weight | sector
+
+    # Performance metrics
+    total_return: float
+    annualized_return: float
+    annualized_volatility: float
+    sharpe_ratio: float
+    sortino_ratio: float
+    calmar_ratio: float
+    max_drawdown: float
+    max_drawdown_duration_days: int
+
+    # Benchmark comparison
+    benchmark_return: float
+    benchmark_volatility: float
+    alpha: float
+    beta: float
+    information_ratio: float
+    tracking_error: float
+
+    # Trade statistics
+    total_trades: int
+    avg_trades_per_rebalance: float
+    total_transaction_costs: float
+    total_slippage: float
+    total_market_impact: float
+    costs_as_pct_of_return: float
+    turnover_annual: float  # Annual portfolio turnover rate
+
+    # Win/loss stats
+    winning_days: int
+    losing_days: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    profit_factor: float  # Avg win / avg loss
+
+    # Risk metrics
+    value_at_risk_95: float  # 95% 1-day VaR
+    conditional_var_95: float  # CVaR (expected shortfall)
+    downside_deviation: float
+    upside_capture: float
+    downside_capture: float
+
+    # Monthly/yearly breakdown
+    monthly_returns: pd.DataFrame  # year | month | return | benchmark_return
+    yearly_returns: pd.DataFrame  # year | return | volatility | sharpe | max_dd
+
+    # Diagnostics
+    backtest_start: datetime
+    backtest_end: datetime
+    initial_capital: float
+    final_capital: float
+    total_days: int
+    rebalance_count: int
+    config: Dict[str, Any]  # Backtest configuration for reproducibility
+```
+
+---
+
+**`PerformanceAnalyzer`** - Post-processing and visualization
+
+```python
+class PerformanceAnalyzer:
+    """Generate institutional-quality performance reports."""
+
+    def __init__(self, result: BacktestResult):
+        self.result = result
+
+    def generate_tearsheet(self, output_dir: str = "backtests/") -> str:
+        """
+        Generate comprehensive HTML tearsheet with:
+        - Executive summary (one-page)
+        - Equity curve chart (log scale, drawdown overlay)
+        - Monthly returns heatmap
+        - Rolling Sharpe ratio chart
+        - Underwater chart (drawdown visualization)
+        - Distribution of returns (histogram + normal overlay)
+        - Top 10 best/worst days
+        - Holdings concentration over time
+        - Sector allocation over time
+        - Trade analysis (size distribution, costs)
+        - Risk metrics table
+        - Benchmark comparison table
+
+        Returns: path to saved HTML file
+        """
+
+    def plot_equity_curve(self, save_path: str = None) -> plt.Figure:
+        """Plot equity curve with drawdown."""
+
+    def plot_monthly_returns_heatmap(self, save_path: str = None) -> plt.Figure:
+        """Seaborn heatmap of monthly returns."""
+
+    def plot_rolling_metrics(self, window: int = 63,
+                            save_path: str = None) -> plt.Figure:
+        """Plot rolling Sharpe, volatility, beta over time."""
+
+    def plot_drawdown_underwater(self, save_path: str = None) -> plt.Figure:
+        """Underwater chart showing drawdown depth and recovery."""
+
+    def export_to_csv(self, output_dir: str = "backtests/"):
+        """Export all DataFrames to CSV for external analysis."""
+
+    def compare_strategies(self, other_results: List[BacktestResult],
+                          labels: List[str]) -> pd.DataFrame:
+        """Compare multiple strategies side-by-side."""
+```
+
+---
+
+### 2. Walk-Forward Validation (`backtesting/walk_forward.py`)
+
+Prevent overfitting through proper out-of-sample testing.
+
+```python
+class WalkForwardValidator:
+    """
+    Implement walk-forward analysis:
+    - Train on N years (in-sample)
+    - Test on M months (out-of-sample)
+    - Roll forward, repeat
+
+    Example: Train on 24 months, test on 6 months, roll forward 6 months.
+    This gives you pure out-of-sample performance.
+    """
+
+    def __init__(self,
+                 strategy_fn: Callable,
+                 train_window_months: int = 24,
+                 test_window_months: int = 6,
+                 step_months: int = 6):
+        """
+        Args:
+            strategy_fn: Strategy function to optimize (if needed)
+            train_window_months: In-sample period
+            test_window_months: Out-of-sample period
+            step_months: How far to roll forward each iteration
+        """
+
+    def run(self, start_date: str, end_date: str,
+            **backtest_kwargs) -> WalkForwardResult:
+        """
+        Execute walk-forward validation.
+
+        Returns combined OOS performance metrics.
+        """
+
+    def plot_is_vs_oos(self) -> plt.Figure:
+        """
+        Plot in-sample vs out-of-sample Sharpe ratios.
+        Detect overfitting: IS Sharpe >> OOS Sharpe = problem!
+        """
+```
+
+---
+
+### 3. Strategy Wrappers (`backtesting/strategies.py`)
+
+Pre-built strategy adapters that interface with the backtester.
+
+```python
+def magic_formula_strategy(universe: List[str],
+                          prices: pd.DataFrame,
+                          fundamentals: pd.DataFrame,
+                          date: datetime,
+                          lookback_window: int = 252,
+                          n_positions: int = 20) -> Dict[str, float]:
+    """
+    Magic Formula strategy adapter for backtesting.
+
+    Args:
+        universe: List of tickers available
+        prices: Historical price data
+        fundamentals: Fundamental data
+        date: Current date
+        lookback_window: Days of history to use
+        n_positions: Number of positions
+
+    Returns:
+        Dict of {ticker: weight} for portfolio
+    """
+    # Import from factors/magic_formula.py
+    # Calculate scores
+    # Return top N positions as equal-weighted dict
+
+
+def momentum_strategy(universe: List[str],
+                     prices: pd.DataFrame,
+                     date: datetime,
+                     lookback: int = 252,
+                     skip_months: int = 1,
+                     n_positions: int = 20) -> Dict[str, float]:
+    """
+    Pure momentum strategy (12-1 month momentum).
+    """
+
+def combined_factors_strategy(universe: List[str],
+                             prices: pd.DataFrame,
+                             fundamentals: pd.DataFrame,
+                             date: datetime,
+                             **kwargs) -> Dict[str, float]:
+    """
+    Combined Magic Formula + Momentum.
+    Rank on composite score.
+    """
+```
+
+---
+
+### 4. Comprehensive Testing (`test_backtester.py`)
+
+```python
+import unittest
+from backtesting.engine import Backtester, BacktestResult
+from backtesting.strategies import magic_formula_strategy
+
+class TestBacktester(unittest.TestCase):
+
+    def test_simple_backtest(self):
+        """Test basic backtest runs without errors."""
+        bt = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2021-12-31",
+            initial_capital=100000,
+            rebalance_frequency="monthly",
+            verbose=False
+        )
+        result = bt.run()
+
+        # Assertions
+        self.assertIsInstance(result, BacktestResult)
+        self.assertGreater(result.total_return, -0.5)  # Not catastrophic loss
+        self.assertLess(result.max_drawdown, 0)  # Drawdown is negative
+        self.assertEqual(result.rebalance_count, 24)  # 24 months
+
+    def test_transaction_costs_reduce_returns(self):
+        """Verify costs are applied correctly."""
+        # Run with 0 cost
+        bt_no_cost = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2021-12-31",
+            transaction_cost=0,
+            fixed_slippage_bps=0
+        )
+        result_no_cost = bt_no_cost.run()
+
+        # Run with realistic costs
+        bt_with_cost = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2021-12-31",
+            transaction_cost=10,
+            fixed_slippage_bps=5
+        )
+        result_with_cost = bt_with_cost.run()
+
+        # Costs should reduce returns
+        self.assertLess(result_with_cost.total_return,
+                       result_no_cost.total_return)
+
+    def test_equity_curve_monotonic_time(self):
+        """Equity curve should have no time gaps."""
+        bt = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2020-12-31"
+        )
+        result = bt.run()
+
+        dates = result.equity_curve['date'].values
+        # Check dates are sorted and have no duplicates
+        self.assertTrue(all(dates[i] < dates[i+1] for i in range(len(dates)-1)))
+
+    def test_holdings_sum_to_portfolio_value(self):
+        """Holdings + cash should equal total value."""
+        bt = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2020-06-30"
+        )
+        result = bt.run()
+
+        for _, row in result.equity_curve.iterrows():
+            total = row['holdings_value'] + row['cash']
+            self.assertAlmostEqual(total, row['portfolio_value'], places=2)
+
+    def test_sharpe_ratio_calculation(self):
+        """Verify Sharpe ratio is calculated correctly."""
+        bt = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2021-12-31",
+            risk_free_rate=0.02
+        )
+        result = bt.run()
+
+        # Manual Sharpe calculation
+        returns = result.equity_curve['portfolio_value'].pct_change().dropna()
+        excess_returns = returns - (0.02 / 252)  # Daily RF rate
+        expected_sharpe = (excess_returns.mean() / excess_returns.std()) * np.sqrt(252)
+
+        self.assertAlmostEqual(result.sharpe_ratio, expected_sharpe, places=2)
+
+    def test_max_drawdown_detection(self):
+        """Verify max drawdown is detected correctly."""
+        bt = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2021-12-31"
+        )
+        result = bt.run()
+
+        # Manual drawdown calculation
+        cummax = result.equity_curve['portfolio_value'].cummax()
+        drawdowns = (result.equity_curve['portfolio_value'] - cummax) / cummax
+        expected_max_dd = drawdowns.min()
+
+        self.assertAlmostEqual(result.max_drawdown, expected_max_dd, places=4)
+
+    def test_benchmark_comparison(self):
+        """Test benchmark (SPY) is loaded and compared."""
+        bt = Backtester(
+            strategy_fn=magic_formula_strategy,
+            start_date="2020-01-01",
+            end_date="2021-12-31",
+            benchmark_ticker="SPY"
+        )
+        result = bt.run()
+
+        self.assertIsNotNone(result.benchmark_return)
+        self.assertIsNotNone(result.alpha)
+        self.assertIsNotNone(result.beta)
+        self.assertGreater(result.benchmark_return, -0.5)  # SPY didn't collapse
+```
+
+---
+
+### 5. Example Script (`examples/run_backtest.py`)
+
+```python
+"""
+Example: Run comprehensive Magic Formula backtest.
+
+This script demonstrates:
+1. Loading data
+2. Configuring backtest with realistic parameters
+3. Running backtest
+4. Generating tearsheet
+5. Exporting results
+"""
+
+import sys
+sys.path.append('D:/quant-edge')
+
+from backtesting.engine import Backtester, PerformanceAnalyzer
+from backtesting.strategies import magic_formula_strategy
+from datetime import datetime
+
+def main():
+    print("="*80)
+    print("MAGIC FORMULA BACKTEST (2014-2024)")
+    print("="*80)
+
+    # Configure backtest
+    bt = Backtester(
+        strategy_fn=magic_formula_strategy,
+        start_date="2014-01-01",
+        end_date="2024-01-01",
+        initial_capital=25000,
+        rebalance_frequency="monthly",
+        transaction_cost=10,  # 10 bps
+        fixed_slippage_bps=5,  # 5 bps
+        market_impact_model="sqrt",
+        lookback_window=252,
+        min_price=5.0,
+        max_position_size=0.15,
+        benchmark_ticker="SPY",
+        risk_free_rate=0.04,
+        verbose=True
+    )
+
+    # Run backtest
+    print("\nRunning backtest...")
+    result = bt.run()
+
+    # Print summary
+    print("\n" + "="*80)
+    print("BACKTEST RESULTS")
+    print("="*80)
+    print(f"Total Return:       {result.total_return:.2%}")
+    print(f"Annualized Return:  {result.annualized_return:.2%}")
+    print(f"Volatility:         {result.annualized_volatility:.2%}")
+    print(f"Sharpe Ratio:       {result.sharpe_ratio:.2f}")
+    print(f"Sortino Ratio:      {result.sortino_ratio:.2f}")
+    print(f"Max Drawdown:       {result.max_drawdown:.2%}")
+    print(f"Calmar Ratio:       {result.calmar_ratio:.2f}")
+    print()
+    print(f"Benchmark Return:   {result.benchmark_return:.2%}")
+    print(f"Alpha:              {result.alpha:.2%}")
+    print(f"Beta:               {result.beta:.2f}")
+    print(f"Information Ratio:  {result.information_ratio:.2f}")
+    print()
+    print(f"Total Trades:       {result.total_trades}")
+    print(f"Transaction Costs:  ${result.total_transaction_costs:,.2f}")
+    print(f"Annual Turnover:    {result.turnover_annual:.1%}")
+    print(f"Win Rate:           {result.win_rate:.1%}")
+    print("="*80)
+
+    # Generate tearsheet
+    print("\nGenerating tearsheet...")
+    analyzer = PerformanceAnalyzer(result)
+    tearsheet_path = analyzer.generate_tearsheet(output_dir="backtests/")
+    print(f"Tearsheet saved: {tearsheet_path}")
+
+    # Export CSVs
+    print("\nExporting data...")
+    analyzer.export_to_csv(output_dir="backtests/")
+    print("Exported: equity_curve.csv, trades.csv, monthly_returns.csv, yearly_returns.csv")
+
+    print("\n✅ Backtest complete!")
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+### 6. Additional Requirements
+
+**Data Handling:**
+- Use existing `data/fetchers/yfinance_fetcher.py` for price/fundamental data
+- Cache all data lookups to avoid repeated API calls
+- Handle missing data gracefully (forward-fill prices, skip stocks with missing fundamentals)
+- Handle corporate actions (splits, dividends) - adjust prices accordingly
+
+**Rebalancing Logic:**
+- On rebalance dates:
+  1. Get filtered universe
+  2. Calculate strategy weights
+  3. Apply position/sector constraints
+  4. Generate trades (delta between current and target)
+  5. Execute trades with costs
+  6. Update holdings
+- Between rebalances: mark-to-market daily, no trades
+
+**Performance Metrics:**
+- Annualized return: `(final / initial)^(252 / days) - 1`
+- Sharpe ratio: `(mean_return - rf) / std_return * sqrt(252)`
+- Sortino ratio: Use downside deviation (only negative returns)
+- Calmar ratio: `annualized_return / abs(max_drawdown)`
+- Alpha/Beta: OLS regression vs benchmark
+- Information ratio: `(portfolio_return - benchmark_return) / tracking_error`
+
+**Visualization Requirements:**
+- Use matplotlib + seaborn
+- Professional styling (not default matplotlib colors!)
+- Clear labels, titles, legends
+- Grid lines for readability
+- Log scale for equity curves
+- Save as high-res PNG (300 DPI)
+
+**Code Quality:**
+- Type hints on all functions
+- Comprehensive docstrings (Google style)
+- Defensive programming (validate inputs)
+- Logging (use Python logging module)
+- No hardcoded paths (use pathlib)
+- Configuration via dataclass or dict
+
+---
+
+## Expected Output
+
+After completion, I should be able to run:
+
+```python
+from backtesting.engine import Backtester
+from backtesting.strategies import magic_formula_strategy
+
+bt = Backtester(
+    strategy_fn=magic_formula_strategy,
+    start_date="2014-01-01",
+    end_date="2024-01-01",
+    initial_capital=25000,
+    rebalance_frequency="monthly"
+)
+
+result = bt.run()
+
+# Generates:
+# - backtests/tearsheet_YYYYMMDD_HHMMSS.html (comprehensive report)
+# - backtests/equity_curve.png
+# - backtests/monthly_returns_heatmap.png
+# - backtests/drawdown_underwater.png
+# - backtests/equity_curve.csv
+# - backtests/trades.csv
+# - backtests/holdings_history.csv
+# - backtests/monthly_returns.csv
+# - backtests/yearly_returns.csv
+```
+
+And see output like:
+
+```
+================================================================================
+BACKTEST RESULTS (2014-01-01 to 2024-01-01)
+================================================================================
+Total Return:       +187.3%
+Annualized Return:  +11.2%
+Volatility:         18.4%
+Sharpe Ratio:       0.87
+Max Drawdown:       -23.1%
+
+Benchmark (SPY):    +156.2%
+Alpha:              +3.1% annually
+Beta:               0.92
+Information Ratio:  0.54
+
+Total Trades:       2,847
+Transaction Costs:  $4,231 (2.3% of total return)
+Annual Turnover:    245%
+Win Rate:           58.3%
+================================================================================
+```
+
+---
+
+## Validation Criteria
+
+Before considering this task complete, verify:
+
+1. ✅ Backtest runs on 10 years of data without errors
+2. ✅ Performance metrics match manual calculations
+3. ✅ Transaction costs are non-zero and realistic
+4. ✅ Equity curve is smooth (no jumps or gaps)
+5. ✅ Max drawdown occurs during known market crashes (2020 COVID, 2022 inflation)
+6. ✅ Sharpe ratio is reasonable (0.5 - 1.5 range for equity strategies)
+7. ✅ Tearsheet HTML opens in browser and looks professional
+8. ✅ All test cases pass
+9. ✅ Code follows existing project style
+10. ✅ Documentation is complete
+
+---
+
+## Stretch Goals (If Time Permits)
+
+1. **Monte Carlo simulation** - Resample returns to generate confidence intervals
+2. **Regime detection** - Flag bull/bear market periods, show strategy performance by regime
+3. **Attribution analysis** - Decompose returns into factor contributions
+4. **Seasonality analysis** - Which months/days of week perform best?
+5. **Concentration metrics** - HHI index, effective N positions over time
+6. **Interactive tearsheet** - Use Plotly for interactive charts
+7. **Comparison to Greenblatt results** - Compare to original Magic Formula paper returns
+
+---
+
+## References
+
+**Academic Papers:**
+- Greenblatt, "The Little Book That Beats the Market" (2005)
+- Almgren & Chriss, "Optimal Execution of Portfolio Transactions" (2000)
+- Kissell & Glantz, "Optimal Trading Strategies" (2003)
+
+**Existing Frameworks (for inspiration, don't copy):**
+- Quantopian/Zipline backtest engine
+- QuantConnect LEAN engine
+- Backtrader framework
+- VectorBT
+
+**Our Edge:**
+- Cleaner code than Zipline
+- Faster than Backtrader
+- More realistic cost modeling than academic papers
+- Better visualizations than QuantConnect
+
+---
+
+## Deliverables
+
+1. `backtesting/engine.py` - Core backtesting engine (~800 lines)
+2. `backtesting/strategies.py` - Strategy adapters (~200 lines)
+3. `backtesting/walk_forward.py` - Walk-forward validation (~150 lines)
+4. `backtesting/__init__.py` - Package exports
+5. `test_backtester.py` - Comprehensive test suite (~300 lines)
+6. `examples/run_backtest.py` - Example script (~100 lines)
+7. `docs/BACKTESTING.md` - Documentation with examples
+
+**Total estimate: ~1,550 lines of production code**
+
+---
+
+## Success Metric
+
+When I run:
+```bash
+python examples/run_backtest.py
+```
+
+I should get a professional tearsheet that I could show to an investor and they would take seriously. The kind of backtest report you'd see from a real hedge fund.
+
+**Build institutional-grade infrastructure. No shortcuts. This is the foundation for real money.**
